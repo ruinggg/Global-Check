@@ -76,7 +76,7 @@ ws.range("AI:AT").clear()
 ws.range("AV:BF").clear()
 ws.range("BH:BS").clear()
 ws.range("BU:CF").clear()
-ws.range("CH:CR").clear()  # 清除 Story Stiffness 區塊
+ws.range("CH:CR").clear()
 
 # === Write data blocks ===
 write_block(ws, "A1", "Story Definitions", df_story.columns.tolist() + ["Elevation"], ["", "in", "", "", "", "in"], df_story, "StoryDefinitions")

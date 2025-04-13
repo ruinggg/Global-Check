@@ -2,15 +2,30 @@ import pandas as pd
 import xlwings as xw
 import os
 from pathlib import Path
+from tkinter import Tk, filedialog
 
-input_file = "Input.xlsx"
+# === Prompt user to select Input file ===
+print("📁 Launching file picker for Input.xlsx...")
+
+Tk().withdraw()
+input_file = filedialog.askopenfilename(
+    title="Select Input.xlsx",
+    filetypes=[("Excel files", "*.xlsx")]
+)
+
+if not input_file:
+    print(f"✅ Input file selected: {input_file}")
+    raise FileNotFoundError("❌ No input file selected.")
+
 global_file = "Global.xlsm"
 target_sheet = "Data"
 
 if not Path(global_file).is_file():
+    print(f"🔄 Found global file: {global_file}")
     raise FileNotFoundError(f"File not found: {global_file}")
 
 # === Load all DataFrames ===
+print("📥 Loading: Story Definitions")
 df_story = pd.read_excel(input_file, sheet_name="Story Definitions", usecols="A:E", skiprows=3, header=None)
 df_story.columns = ["Name", "Height", "Master Story", "Similar To", "Splice Story"]
 df_story["Height"] = pd.to_numeric(df_story["Height"], errors="coerce")
@@ -18,25 +33,32 @@ df_story = df_story[::-1].reset_index(drop=True)
 df_story["Elevation"] = df_story["Height"].cumsum()
 df_story = df_story[::-1].reset_index(drop=True)
 
+print("📥 Loading: Modal Participating Mass Ratios")
 df_modal = pd.read_excel(input_file, sheet_name="Modal Participating Mass Ratios", skiprows=3, header=None)
 df_modal.columns = ["Case", "Mode", "Period", "UX", "UY", "UZ", "SumUX", "SumUY", "SumUZ", "RX", "RY", "RZ", "SumRX", "SumRY", "SumRZ"]
 
+print("📥 Loading: Story Drifts")
 df_drift = pd.read_excel(input_file, sheet_name="Story Drifts", skiprows=3, header=None)
 df_drift.columns = ["Story", "Output Case", "Case Type", "Step Type", "Direction", "Drift", "Label", "X", "Y", "Z"]
 
+print("📥 Loading: Diaphragm Max Over Avg Drifts")
 df_diaphragm = pd.read_excel(input_file, sheet_name="Diaphragm Max Over Avg Drifts", skiprows=3, header=None)
 df_diaphragm.columns = ["Story", "Output Case", "Case Type", "Step Type", "Item", "Max Drift", "Avg Drift", "Ratio", "Label", "Max Loc X", "Max Loc Y", "Max Loc Z"]
 
+print("📥 Loading: Story Forces")
 df_force = pd.read_excel(input_file, sheet_name="Story Forces", skiprows=3, header=None)
 df_force.columns = ["Story", "Output Case", "Case Type", "Step Type", "Location", "P", "VX", "VY", "T", "MX", "MY"]
 df_force = df_force.reset_index(drop=True)
 
+print("📥 Loading: Joint Displacements")
 df_joint = pd.read_excel(input_file, sheet_name="Joint Displacements", skiprows=3, header=None)
 df_joint.columns = ["Story", "Label", "Unique Name", "Output Case", "Case Type", "Step Type", "UX", "UY", "UZ", "RX", "RY", "RZ"]
 
+print("📥 Loading: Diaphragm CM Displacements")
 df_cm = pd.read_excel(input_file, sheet_name="Diaphragm CM Displacements", skiprows=3, header=None)
 df_cm.columns = ["Story", "Diaphragm", "Output Case", "Case Type", "Step Type", "UX", "UY", "RZ", "Point", "X", "Y", "Z"]
 
+print("📥 Loading: Story Stiffness")    
 df_stiffness = pd.read_excel(input_file, sheet_name="Story Stiffness", skiprows=3, header=None)
 df_stiffness.columns = ["Story", "Output Case", "Case Type", "Step Type", "Shear X", "Drift X", "Stiff X", "Shear Y", "Drift Y", "Stiff Y"]
 
@@ -45,6 +67,7 @@ def col_letter(idx):
     return xw.utils.col_name(idx)
 
 def write_block(ws, cell, title, headers, units, df, name):
+    print("✍️  Writing to Excel...")
     start_col = ws.range(cell).column
     start_row = ws.range(cell).row
     data_start = start_row + 3
@@ -96,5 +119,9 @@ for cell in ["A1", "H1", "X1", "AI1", "AV1", "BH1", "BU1", "CH1"]:
     ws.range(cell).api.Font.Bold = True
 
 wb.save()
+print("✅ Excel saved successfully.")
 wb.close()
 app.quit()
+print("🎉 All tasks completed. Closing Excel.")
+
+

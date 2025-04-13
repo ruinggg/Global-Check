@@ -79,7 +79,7 @@ ws.range("BU:CF").clear()
 ws.range("CH:CR").clear()
 
 # === Write data blocks ===
-write_block(ws, "A1", "Story Definitions", df_story.columns.tolist() + ["Elevation"], ["", "in", "", "", "", "in"], df_story, "StoryDefinitions")
+write_block(ws, "A1", "Story Definitions", df_story.columns.tolist(), ["", "in", "", "", "", "in"], df_story, "StoryDefinitions")
 write_block(ws, "H1", "Modal Participating Mass Ratios", df_modal.columns.tolist(), ["", "", "sec"], df_modal, "ModalMassRatios")
 write_block(ws, "X1", "Story Drift", df_drift.columns.tolist(), ["", "", "", "", "", "", "", "in", "in", "in"], df_drift, "StoryDrifts")
 write_block(ws, "AI1", "Diaphragm Max Over Avg Drifts", df_diaphragm.columns.tolist(), ["", "", "", "", "", "", "", "", "", "in", "in", "in"], df_diaphragm, "DiaphragmMaxOverAvgDrifts")

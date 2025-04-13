@@ -1,0 +1,14 @@
+# 忽略 pyinstaller 的產出資料夾和檔案
+build/
+dist/
+*.spec
+
+# 忽略 VSCode 設定（可選）
+.vscode/
+
+# 忽略 __pycache__ 資料夾
+__pycache__/
+
+# 忽略其他暫存檔
+*.log
+*.tmp

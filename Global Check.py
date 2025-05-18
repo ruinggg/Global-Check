@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from tkinter import Tk, filedialog, messagebox
 import traceback
+import sys
 
 try:
     # === Select Input File ===
@@ -20,7 +21,13 @@ try:
         print(f"✅ Input file selected: {input_file}")
         xls = pd.ExcelFile(input_file)
 
-    script_dir = Path(__file__).parent
+    if getattr(sys, 'frozen', False):
+        # Running in a PyInstaller bundle
+        script_dir = Path(sys.executable).parent
+    else:
+        # Running in normal Python environment
+        script_dir = Path(__file__).parent
+
     global_file = script_dir / "Global.xlsm"
     target_sheet = "Data"
 
@@ -39,6 +46,8 @@ try:
         df_story.columns = headers
         df_story = df_story.loc[:, ~df_story.columns.duplicated()]
         headers = list(df_story.columns)
+        print("🧪 Early header check:", headers)  # 👈 加在這裡
+        
         units = [u if pd.notna(u) and not str(u).startswith("Unnamed") else "" for u in units]
 
         # === Load Base Elevation ===
@@ -83,10 +92,18 @@ try:
                 df_story["Elevation"] = df_story["Height"].cumsum() + base_elevation
                 df_story = df_story[::-1].reset_index(drop=True)
 
+                # ✅ 先 append Elevation header，再用 header 的 index 對應單位
                 headers.append("Elevation")
-                units.append("m")
-                print("✅ Elevation calculated from base elevation.")
+                if "Height" in headers:
+                    height_index = headers.index("Height")
+                    height_unit = units[height_index] if height_index < len(units) else ""
+                else:
+                    height_unit = ""
 
+                units.append(height_unit)
+
+                print("✅ Elevation calculated from base elevation.")
+                
         else:
             print("❌ 'Height' column not found.")
             df_story["Elevation"] = None

@@ -2,14 +2,12 @@ import pandas as pd
 import xlwings as xw
 import os
 from pathlib import Path
-from tkinter import Tk, filedialog
-from tkinter import messagebox
+from tkinter import Tk, filedialog, messagebox
 import traceback
 
 try:
-    # === Prompt user to select Input file ===
+    # === Select Input File ===
     print("📁 Launching file picker for Input.xlsx...")
-
     Tk().withdraw()
     input_file = filedialog.askopenfilename(
         title="Select Input.xlsx",
@@ -20,158 +18,240 @@ try:
         raise FileNotFoundError("❌ No input file selected.")
     else:
         print(f"✅ Input file selected: {input_file}")
-        xls = pd.ExcelFile(input_file)  # Check if the file is valid
-
+        xls = pd.ExcelFile(input_file)
 
     script_dir = Path(__file__).parent
     global_file = script_dir / "Global.xlsm"
     target_sheet = "Data"
 
     if not Path(global_file).is_file():
-        raise FileNotFoundError(f"File not found: {global_file}")
+        raise FileNotFoundError(f"❌ File not found: {global_file}")
     else:
         print(f"🔄 Found global file: {global_file}")
 
-    # === Load all DataFrames ===
+    # === Story Definitions ===
     print("📥 Loading: Story Definitions")
     if "Story Definitions" in xls.sheet_names:
-        df_story = pd.read_excel(input_file, sheet_name="Story Definitions", usecols="A:E", skiprows=3, header=None)
-        df_story.columns = ["Name", "Height", "Master Story", "Similar To", "Splice Story"]
-        df_story["Height"] = pd.to_numeric(df_story["Height"], errors="coerce")
-        df_story = df_story[::-1].reset_index(drop=True)
-        df_story["Elevation"] = df_story["Height"].cumsum()
-        df_story = df_story[::-1].reset_index(drop=True)
+        raw_df = pd.read_excel(input_file, sheet_name="Story Definitions", header=None, skiprows=1, usecols="A:E")
+        headers = raw_df.iloc[0].tolist()
+        units = raw_df.iloc[1].tolist()
+        df_story = raw_df.iloc[2:].reset_index(drop=True)
+        df_story.columns = headers
+        df_story = df_story.loc[:, ~df_story.columns.duplicated()]
+        headers = list(df_story.columns)
+        units = [u if pd.notna(u) and not str(u).startswith("Unnamed") else "" for u in units]
+
+        # === Load Base Elevation ===
+        print("📥 Reading base elevation...")
+        try:
+            base_sheet_name = next((s for s in xls.sheet_names if s.strip() == "Tower and Base Story Definition"), None)
+
+            if base_sheet_name:
+                base_df = pd.read_excel(input_file, sheet_name=base_sheet_name, header=None)
+                print("📋 Preview (row 4):", base_df.iloc[3].tolist())  # Debug：印出第 4 列
+
+                # ✅ 找出 "BSElev" 欄位的索引位置（通常在第 5~7 行）
+                header_row = base_df.iloc[1].tolist()
+                if "BSElev" in header_row:
+                    elev_col_idx = header_row.index("BSElev")
+                    base_elevation = pd.to_numeric(base_df.iloc[3, elev_col_idx], errors="coerce")
+                    if pd.isna(base_elevation):
+                        print("⚠️ Base Elevation is NaN. Using 0.0 fallback.")
+                        base_elevation = 0.0
+                    else:
+                        print(f"✅ Base Elevation loaded from row 4: {base_elevation}")
+                else:
+                    print("❌ 'BSElev' column not found in header row.")
+                    base_elevation = 0.0
+            else:
+                print("⚠️ Sheet 'Tower and Base Story Definition' not found.")
+                base_elevation = 0.0
+        except Exception as e:
+            print(f"⚠️ Failed to read base elevation: {e}")
+            base_elevation = 0.0
+
+        # === Compute Elevation
+        if "Height" in df_story.columns:
+            df_story["Height"] = pd.to_numeric(df_story["Height"], errors="coerce")
+            if df_story["Height"].dropna().empty:
+                print("⚠️ All Height values are NaN.")
+                df_story["Elevation"] = None
+                headers.append("Elevation")
+                units.append("")
+            else:
+                df_story = df_story[::-1].reset_index(drop=True)
+                df_story["Elevation"] = df_story["Height"].cumsum() + base_elevation
+                df_story = df_story[::-1].reset_index(drop=True)
+
+                headers.append("Elevation")
+                units.append("m")
+                print("✅ Elevation calculated from base elevation.")
+
+        else:
+            print("❌ 'Height' column not found.")
+            df_story["Elevation"] = None
+            headers.append("Elevation")
+            units.append("")
     else:
-        print("⚠️ 'Story Definitions' sheet not found. Skipping.")
+        print("⚠️ 'Story Definitions' sheet not found.")
         df_story = None
 
-    print("📥 Loading: Modal Participating Mass Ratios")
-    if "Modal Participating Mass Ratios" in xls.sheet_names:
-        df_modal = pd.read_excel(input_file, sheet_name="Modal Participating Mass Ratios", skiprows=3, header=None)
-        df_modal.columns = ["Case", "Mode", "Period", "UX", "UY", "UZ", "SumUX", "SumUY", "SumUZ", "RX", "RY", "RZ", "SumRX", "SumRY", "SumRZ"]
-    else:
-        print("⚠️ 'Modal Participating Mass Ratios' sheet not found. Skipping.")
-        df_modal = None
-
-    print("🔍 Checking 'Story Drifts' sheet...")
-    if "Story Drifts" in xls.sheet_names:
-        df_drift = pd.read_excel(xls, sheet_name="Story Drifts", skiprows=3, header=None)
-        col_count = df_drift.shape[1]
-        if col_count == 10:
-            df_drift.columns = ["Story", "Output Case", "Case Type", "Step Type", "Direction", "Drift", "Label", "X", "Y", "Z"]
-        elif col_count == 11:
-            df_drift.columns = ["Story", "Output Case", "Case Type", "Step Type", "Direction", "Drift", "Drift/", "Label", "X", "Y", "Z"]
+    # === Generic function to load MultiIndex Excel with units ===
+    def load_multiindex_sheet(name):
+        if name in xls.sheet_names:
+            df = pd.read_excel(input_file, sheet_name=name, skiprows=1, header=[0, 1])
+            df.columns = pd.MultiIndex.from_tuples([
+                (a if not str(a).startswith("Unnamed") else "", b if not str(b).startswith("Unnamed") else "")
+                for a, b in df.columns
+            ])
+            return df
         else:
-            raise ValueError(f"❌ 'Story Drifts' unexpected column count: {col_count}")
-    else:
-        print("⚠️ 'Story Drifts' sheet not found. Skipping.")
-        df_drift = None
+            print(f"⚠️ Sheet '{name}' not found. Skipping.")
+            return None
 
-    print("📥 Loading: Diaphragm Max Over Avg Drifts")
-    if "Diaphragm Max Over Avg Drifts" in xls.sheet_names:
-        df_diaphragm = pd.read_excel(input_file, sheet_name="Diaphragm Max Over Avg Drifts", skiprows=3, header=None)
-        df_diaphragm.columns = ["Story", "Output Case", "Case Type", "Step Type", "Item", "Max Drift", "Avg Drift", "Ratio", "Label", "Max Loc X", "Max Loc Y", "Max Loc Z"]
-    else:
-        print("⚠️ 'Diaphragm Max Over Avg Drifts' sheet not found. Skipping.")
-        df_diaphragm = None
+    df_modal = load_multiindex_sheet("Modal Participating Mass Ratios")
+    df_drift = load_multiindex_sheet("Story Drifts")
+    df_diaphragm = load_multiindex_sheet("Diaphragm Max Over Avg Drifts")
+    df_force = load_multiindex_sheet("Story Forces")
+    df_joint = load_multiindex_sheet("Joint Displacements")
+    df_cm = load_multiindex_sheet("Diaphragm CM Displacements")
+    df_stiffness = load_multiindex_sheet("Story Stiffness")
+    df_jointdrift = load_multiindex_sheet("Joint Drifts")
+    df_base = load_multiindex_sheet("Base Reactions")
 
-    print("📥 Loading: Story Forces")
-    if "Story Forces" in xls.sheet_names:
-        df_force = pd.read_excel(input_file, sheet_name="Story Forces", skiprows=3, header=None)
-        df_force.columns = ["Story", "Output Case", "Case Type", "Step Type", "Location", "P", "VX", "VY", "T", "MX", "MY"]
-        df_force = df_force.reset_index(drop=True)
-    else:
-        print("⚠️ 'Story Forces' sheet not found. Skipping.")
-        df_force = None
-
-    print("📥 Loading: Joint Displacements")
-    if "Joint Displacements" in xls.sheet_names:
-        df_joint = pd.read_excel(input_file, sheet_name="Joint Displacements", skiprows=3, header=None)
-        df_joint.columns = ["Story", "Label", "Unique Name", "Output Case", "Case Type", "Step Type", "UX", "UY", "UZ", "RX", "RY", "RZ"]
-    else:
-        print("⚠️ 'Joint Displacements' sheet not found. Skipping.")
-        df_joint = None
-
-    print("📥 Loading: Diaphragm CM Displacements")
-    if "Diaphragm CM Displacements" in xls.sheet_names:
-        df_cm = pd.read_excel(input_file, sheet_name="Diaphragm CM Displacements", skiprows=3, header=None)
-        df_cm.columns = ["Story", "Diaphragm", "Output Case", "Case Type", "Step Type", "UX", "UY", "RZ", "Point", "X", "Y", "Z"]
-    else:
-        print("⚠️ 'Diaphragm CM Displacements' sheet not found. Skipping.")
-        df_cm = None
-
-    print("📥 Loading: Story Stiffness")
-    if "Story Stiffness" in xls.sheet_names:
-        df_stiffness = pd.read_excel(xls, sheet_name="Story Stiffness", skiprows=3, header=None)
-        df_stiffness.columns = ["Story", "Output Case", "Case Type", "Step Type", "Shear X", "Drift X", "Stiff X", "Shear Y", "Drift Y", "Stiff Y"]
-    else:
-        print("⚠️ Sheet 'Story Stiffness' not found. Skipping.")
-        df_stiffness = None
-
-    # === Excel helper functions ===
+    # === Excel Helper ===
     def col_letter(idx):
         return xw.utils.col_name(idx)
 
-    def write_block(ws, cell, title, headers, units, df, name):
-        print("✍️  Writing to Excel...")
+    def col_name_to_number(col_str):
+        col_str = col_str.upper()
+        exp = 0
+        col_num = 0
+        for char in reversed(col_str):
+            col_num += (ord(char) - ord('A') + 1) * (26 ** exp)
+            exp += 1
+        return col_num
+    
+    def write_block(ws, cell, title, df, name, units=None):
+        print(f"✍️  Writing '{title}' to Excel...")
         start_col = ws.range(cell).column
         start_row = ws.range(cell).row
-        data_start = start_row + 3
+        row1, row2, data_start = start_row + 1, start_row + 2, start_row + 3
 
         ws.range(cell).value = title
-        ws.range((start_row + 1, start_col)).value = headers
-        ws.range((start_row + 2, start_col)).value = units
-        ws.range((start_row + 1, start_col), (start_row + 2, start_col + len(headers) - 1)).color = (198, 239, 255)
-        ws.range((data_start, start_col)).value = df.values.tolist()
-        end_row = data_start + len(df) - 1
-        end_col = start_col + len(headers) - 1
-        ws.range((start_row + 1, start_col), (end_row, end_col)).api.Borders.Weight = 2
+        ws.range(cell).api.Font.Bold = True
 
-        ref = f"{target_sheet}!${col_letter(start_col)}${start_row + 1}:${col_letter(end_col)}${end_row}"
+        # Write header
+        ws.range((row1, start_col)).value = df.columns.tolist() if not isinstance(df.columns, pd.MultiIndex) else df.columns.get_level_values(0).tolist()
+        # Write unit row
+        if isinstance(df.columns, pd.MultiIndex):
+            ws.range((row2, start_col)).value = df.columns.get_level_values(1).tolist()
+        elif units:
+            ws.range((row2, start_col)).value = units
+        else:
+            ws.range((row2, start_col)).value = [""] * len(df.columns)
+
+        # Write data
+        ws.range((data_start, start_col)).value = df.values.tolist()
+        
+        # Define the range: from the header row (row1) to the last data row
+        end_row = data_start + len(df) - 1
+        end_col = start_col + len(df.columns) - 1
+        full_range = ws.range((row1, start_col), (end_row, end_col))
+        # Light blue background fill: applied only to the header and unit rows
+        ws.range((row1, start_col), (row2, end_col)).color = (198, 239, 255)
+        # Apply borders to the entire block (header + unit + data)
+        for i in range(7, 13):  # xlEdgeLeft to xlInsideHorizontal
+            full_range.api.Borders(i).LineStyle = 1  # xlContinuous
+            full_range.api.Borders(i).Weight = 2     # xlThin
+        # Center-align all cells within the block
+        full_range.api.HorizontalAlignment = -4108  # xlCenter
+        full_range.api.VerticalAlignment = -4108    # xlCenter
+        
+        # Define named range from header row (row1) to data end
+        ref = f"{target_sheet}!${col_letter(start_col)}${row1}:${col_letter(end_col)}${end_row}"
         if name in [n.name for n in wb.names]:
             wb.names[name].delete()
         wb.names.add(name, refers_to=f"={ref}")
-        return data_start
+        
+    def create_placeholder_from_range(rng):
+        from_col = rng.split(":")[0]
+        to_col = rng.split(":")[1]
+        col_count = col_name_to_number(to_col) - col_name_to_number(from_col) + 1
+        return pd.DataFrame(columns=[""] * col_count)
+    
+    # === Define all data blocks: (title, anchor cell, Excel range, variable name) ===
+    name_mapping = {
+    "df_modal": "ModalMassRatios",
+    "df_drift": "StoryDrifts",
+    "df_diaphragm": "DiaphragmMaxOverAvgDrifts",
+    "df_force": "StoryForces",
+    "df_joint": "JointDisplacements",
+    "df_cm": "DiaphragmCMDisplacements",
+    "df_stiffness": "StoryStiffness",
+    "df_jointdrift": "JointDrifts",
+    "df_base": "BaseReactions"
+    }
 
-    # === Open Excel and clear contents ===
+    table_blocks = [
+        ("Story Definitions",      "A1",  "A:F",    "df_story"),
+        ("Modal Participating Mass Ratios", "H1",  "H:V",    "df_modal"),
+        ("Story Drift",            "X1",  "X:AH",   "df_drift"),
+        ("Diaphragm Max Over Avg Drifts", "AJ1", "AJ:AU",  "df_diaphragm"),
+        ("Story Forces",           "AW1", "AW:BG",  "df_force"),
+        ("Joint Displacements",    "BI1", "BI:BT",  "df_joint"),
+        ("Diaphragm Center Of Mass Displacements", "BV1", "BV:CG", "df_cm"),
+        ("Story Stiffness",        "CI1", "CI:CS",  "df_stiffness"),
+        ("Joint Drifts",           "CU1", "CU:DD",  "df_jointdrift"),
+        ("Base Reactions",         "DF1", "DF:DQ", "df_base"),
+    ]
+
+    # === Start Excel Write ===
     app = xw.App(visible=False)
     wb = xw.Book(str(global_file))
     ws = wb.sheets[target_sheet]
 
-    ws.range("A:F").clear()
-    ws.range("H:V").clear()
-    ws.range("X:AG").clear()
-    ws.range("AI:AT").clear()
-    ws.range("AV:BF").clear()
-    ws.range("BH:BS").clear()
-    ws.range("BU:CF").clear()
-    ws.range("CH:CR").clear()
+    # Clear all predefined blocks
+    for _, _, rng, _ in table_blocks:
+        ws.range(rng).clear()
 
-    # === Write data blocks ===
+    # Write Story Definitions (special case with units)
     if df_story is not None:
-        write_block(ws, "A1", "Story Definitions", df_story.columns.tolist(), ["", "in", "", "", "", "in"], df_story, "StoryDefinitions")
-    if df_modal is not None:
-        write_block(ws, "H1", "Modal Participating Mass Ratios", df_modal.columns.tolist(), ["", "", "sec"], df_modal, "ModalMassRatios")
-    if df_drift is not None:
-        write_block(ws, "X1", "Story Drift", df_drift.columns.tolist(), ["", "", "", "", "", "", "", "in", "in", "in"], df_drift, "StoryDrifts")
-    if df_diaphragm is not None:
-        write_block(ws, "AI1", "Diaphragm Max Over Avg Drifts", df_diaphragm.columns.tolist(), ["", "", "", "", "", "", "", "", "", "in", "in", "in"], df_diaphragm, "DiaphragmMaxOverAvgDrifts")
-    if df_force is not None:
-        force_data_start = write_block(ws, "AV1", "Story Forces", df_force.columns.tolist(), ["", "", "", "", "", "kip", "kip", "kip", "kip-in", "kip-in", "kip-in"], df_force, "StoryForces")
-    if df_joint is not None:
-        write_block(ws, "BH1", "Joint Displacements", df_joint.columns.tolist(), ["", "", "", "", "", "", "in", "in", "in", "rad", "rad", "rad"], df_joint, "JointDisplacements")
-    if df_cm is not None:
-        write_block(ws, "BU1", "Diaphragm Center Of Mass Displacements", df_cm.columns.tolist(), ["", "", "", "", "", "in", "in", "rad", "", "in", "in", "in"], df_cm, "DiaphragmCMDisplacements")
-    if df_stiffness is not None:
-        write_block(ws, "CH1", "Story Stiffness", df_stiffness.columns.tolist(), ["", "", "", "", "kip", "in", "kip/in", "kip", "in", "kip/in"], df_stiffness, "StoryStiffness")
+        write_block(ws, "A1", "Story Definitions", df_story, "StoryDefinitions", units)
+    else:
+        print("📌 Writing placeholder for Story Definitions (sheet missing).")
+        story_rng = next(r for t, _, r, v in table_blocks if v == "df_story")
+        placeholder = create_placeholder_from_range(story_rng)
+        write_block(ws, "A1", "Story Definitions", placeholder, "StoryDefinitions")
 
-    # === Final formatting ===
-    ws.range("A:CR").autofit()
-    ws.range("A:CR").api.HorizontalAlignment = -4108
-    ws.range("A:CR").api.VerticalAlignment = -4108
-    for cell in ["A1", "H1", "X1", "AI1", "AV1", "BH1", "BU1", "CH1"]:
+    # Write all remaining blocks (auto loop)
+    for title, cell, rng, var_name in table_blocks:
+        if var_name == "df_story":
+            continue  # Already handled above
+        df = globals().get(var_name)
+        print(f"📝 Writing block: {title}")
+        if df is not None:
+            write_block(ws, cell, title, df, name_mapping.get(var_name, var_name))
+        else:
+            print(f"📌 Writing placeholder for {title} (sheet missing).")
+            from_column = rng.split(":")[0]
+            to_column = rng.split(":")[1]
+            col_count = col_name_to_number(to_column) - col_name_to_number(from_column) + 1
+            placeholder = create_placeholder_from_range(rng)
+            write_block(ws, cell, title, placeholder, name_mapping.get(var_name, var_name))
+
+    ws.range("A:CS").autofit()
+    ws.range("A:CS").api.HorizontalAlignment = -4108
+    ws.range("A:CS").api.VerticalAlignment = -4108
+
+    for _, cell, _, _ in table_blocks:
         ws.range(cell).api.Font.Bold = True
 
+    # ✅ Freeze top 3 rows
+    ws.api.Activate()
+    ws.api.Application.ActiveWindow.SplitRow = 3
+    ws.api.Application.ActiveWindow.FreezePanes = True
+    
     wb.save()
     print("✅ Excel saved successfully.")
     wb.close()
@@ -187,5 +267,3 @@ finally:
         pass
 
 print("🎉 All tasks completed. Closing Excel.")
-
-

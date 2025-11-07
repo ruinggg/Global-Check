@@ -28,7 +28,7 @@ try:
         # Running in normal Python environment
         script_dir = Path(__file__).parent
 
-    global_file = script_dir / "Global.xlsm"
+    global_file = script_dir / "Global_Seismic.xlsm"
     target_sheet = "Data"
 
     if not Path(global_file).is_file():
